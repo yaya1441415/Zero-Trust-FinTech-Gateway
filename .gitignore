@@ -1,0 +1,42 @@
+# Compiled output (TypeScript -> JS)
+*.js
+!jest.config.js
+*.d.ts
+*.js.map
+*.tsbuildinfo
+
+# Dependencies
+node_modules/
+
+# CDK
+.cdk.staging/
+cdk.out/
+cdk.context.json
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+.aws-sam/
+
+# Test and coverage output
+coverage/
+.nyc_output/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor and OS files
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Claude Code local files
+.claude/
