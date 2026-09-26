@@ -11,6 +11,9 @@ import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
+import * as kms from 'aws-cdk-lib/aws-kms';
+import { Service } from 'aws-cdk-lib/aws-servicediscovery';
+
 
 export class ZeroTrustFinTechGatewayStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -166,6 +169,23 @@ export class ZeroTrustFinTechGatewayStack extends cdk.Stack {
         authorizer: authorizer, // This enforces the 401 before Lambda is invoked
         authorizationScopes: ['aws.cognito.signin.user.admin'],
     })
+
+    const dataKey = new kms.Key(this, 'FinTechDataKey', {
+      alias: 'alias/fintech-data',
+      description: 'Encrypts sensitive fields before they are stored',
+      enableKeyRotation: true,
+      pendingWindow: cdk.Duration.days(7),
+      removalPolicy: cdk.RemovalPolicy.DESTROY
+    })
+
+    vpc.addInterfaceEndpoint('KmsEndpoint',{
+      service: ec2.InterfaceVpcEndpointAwsService.KMS,
+      privateDnsEnabled: true,
+      subnets: {subnetType: ec2.SubnetType.PRIVATE_ISOLATED},    
+    })
+
+    dataKey.grant(meLambda, 'kms:GenerateDataKey', 'kms:Decrypt');
+    meLambda.addEnvironment('KMS_KEY_ARN', dataKey.keyArn)
 
     new cdk.CfnOutput(this, 'UserPoolIdOutput', {
         value: userPool.userPoolId, 

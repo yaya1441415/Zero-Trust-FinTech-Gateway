@@ -1,10 +1,12 @@
 import { APIGatewayProxyEventV2WithJWTAuthorizer, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
-import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
 import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { SecretsProvider } from '@aws-lambda-powertools/parameters/secrets';
 import { SSMClient } from '@aws-sdk/client-ssm';
 import { SSMProvider } from '@aws-lambda-powertools/parameters/ssm';
+import { KmsKeyringNode, buildClient, CommitmentPolicy } from '@aws-crypto/client-node';
+import { DynamoDBDocumentClient, PutCommand, GetCommand } from '@aws-sdk/lib-dynamodb';
+
 
 const client = new DynamoDBClient({})
 const doClient = DynamoDBDocumentClient.from(client)
@@ -22,6 +24,12 @@ const ssmClient = new SSMClient({
     maxAttempts: 1,
 });
 const ssmProvider  = new SSMProvider({awsSdkV3Client: ssmClient})
+
+// Strictest setting: every message uses key commitment
+const { encrypt, decrypt } = buildClient(CommitmentPolicy.REQUIRE_ENCRYPT_REQUIRE_DECRYPT);
+
+// the keyring says which KMS key to use. Only this key can encrypt or decrypt.
+const keyring = new KmsKeyringNode({ generatorKeyId: process.env.KMS_KEY_ARN! });
 
 export const handler = async (
     event: APIGatewayProxyEventV2WithJWTAuthorizer
@@ -82,6 +90,44 @@ export const handler = async (
         console.error('SSM parameter fetch failed', error);
     }
 
+    let accountMasked: string | undefined
+    try{
+        const pk = `USER#${sub}`;
+        const context = { purpose: 'account-number', pk };
+
+        const {result} = await encrypt(keyring, '123456789', { encryptionContext: context });
+
+        // Store the ciphertext as base64 text
+        await doClient.send(new PutCommand({
+            TableName: process.env.TABLE_NAME,
+            Item: {
+                pk,
+                lastSeen: new Date().toISOString(),
+                accountNumberEnc: result.toString('base64'),
+            },
+        }))
+
+        const res = await doClient.send(new GetCommand({
+            TableName: process.env.TABLE_NAME,
+            Key: { pk },
+        }));
+
+        const {plaintext, messageHeader} = await decrypt(
+            keyring,
+            Buffer.from(res.Item!.accountNumberEnc, 'base64'),
+        )
+
+        if (messageHeader.encryptionContext.pk !== pk) {
+            throw new Error('Encryption context mismatch');
+        }
+
+        const acct = plaintext.toString('utf8');
+        accountMasked = '*'.repeat(acct.length - 4) + acct.slice(-4);
+        
+    }catch(error){
+        console.error('Encryption test failed', error);
+    }
+
     return {
             statusCode: 200,
             headers: { 'Content-Type': 'application/json' },
@@ -92,6 +138,7 @@ export const handler = async (
             secretLoaded, // Only return the boolean
             secretFetchMs,
             maxTransferAmount,
+            accountMasked,
         }),
     };
 }
