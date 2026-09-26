@@ -1,8 +1,10 @@
 import { APIGatewayProxyEventV2WithJWTAuthorizer, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient, PutCommand } from '@aws-sdk/lib-dynamodb';
-import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
+import { SecretsManagerClient } from '@aws-sdk/client-secrets-manager';
 import { SecretsProvider } from '@aws-lambda-powertools/parameters/secrets';
+import { SSMClient } from '@aws-sdk/client-ssm';
+import { SSMProvider } from '@aws-lambda-powertools/parameters/ssm';
 
 const client = new DynamoDBClient({})
 const doClient = DynamoDBDocumentClient.from(client)
@@ -14,6 +16,12 @@ const secretsClient = new SecretsManagerClient({
 
 //CACHE LiVES HERE 
 const secretProvider = new SecretsProvider({awsSdkV3Client: secretsClient})
+
+const ssmClient = new SSMClient({
+    requestHandler: {connectionTimeout: 1000, requestTimeout: 2000 },
+    maxAttempts: 1,
+});
+const ssmProvider  = new SSMProvider({awsSdkV3Client: ssmClient})
 
 export const handler = async (
     event: APIGatewayProxyEventV2WithJWTAuthorizer
@@ -65,7 +73,15 @@ export const handler = async (
     }catch(error) {
         console.error('Secrets Manager fetch failed', error);
     }
-        
+    
+    let maxTransferAmount: string | undefined;
+    try{
+        maxTransferAmount = await ssmProvider.get(process.env.PARAM_NAME!, { maxAge: 300 });
+
+    }catch(error){
+        console.error('SSM parameter fetch failed', error);
+    }
+
     return {
             statusCode: 200,
             headers: { 'Content-Type': 'application/json' },
@@ -75,6 +91,7 @@ export const handler = async (
             dbWriteSuccess,
             secretLoaded, // Only return the boolean
             secretFetchMs,
+            maxTransferAmount,
         }),
     };
 }

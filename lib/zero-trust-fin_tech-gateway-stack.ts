@@ -10,8 +10,7 @@ import { HttpLambdaIntegration } from 'aws-cdk-lib/aws-apigatewayv2-integrations
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
-
-
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 
 export class ZeroTrustFinTechGatewayStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -86,7 +85,15 @@ export class ZeroTrustFinTechGatewayStack extends cdk.Stack {
         service: ec2.GatewayVpcEndpointAwsService.DYNAMODB,
     })
 
-      // seurity Group
+
+    vpc.addInterfaceEndpoint('SsmEndpoint', {
+      service: ec2.InterfaceVpcEndpointAwsService.SSM,
+      privateDnsEnabled: true,
+      subnets: { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
+    });
+
+
+    // seurity Group
     const lambdaSg = new ec2.SecurityGroup(this, 'LambdaSg', {
         vpc,
         allowAllOutbound: false, //
@@ -130,6 +137,14 @@ export class ZeroTrustFinTechGatewayStack extends cdk.Stack {
         excludePunctuation: true,
       }
     })
+
+    const maxTransferParam = new ssm.StringParameter(this, 'MaxTransferParam', {
+      parameterName: '/fintech/config/max-transfer-amount',
+      stringValue: '5000',
+    });
+
+    maxTransferParam.grantRead(meLambda);
+    meLambda.addEnvironment('PARAM_NAME', maxTransferParam.parameterName);
 
     if(endpointsOn) {
       vpc.addInterfaceEndpoint('SecretsManagerEndpoint', {
