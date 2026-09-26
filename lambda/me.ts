@@ -139,6 +139,7 @@ export const handler = async (
             secretFetchMs,
             maxTransferAmount,
             accountMasked,
+
         }),
     };
 }

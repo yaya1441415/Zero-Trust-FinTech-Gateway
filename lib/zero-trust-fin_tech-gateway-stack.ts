@@ -13,7 +13,8 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as kms from 'aws-cdk-lib/aws-kms';
 import { Service } from 'aws-cdk-lib/aws-servicediscovery';
-
+import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as iam from 'aws-cdk-lib/aws-iam';
 
 export class ZeroTrustFinTechGatewayStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -186,6 +187,77 @@ export class ZeroTrustFinTechGatewayStack extends cdk.Stack {
 
     dataKey.grant(meLambda, 'kms:GenerateDataKey', 'kms:Decrypt');
     meLambda.addEnvironment('KMS_KEY_ARN', dataKey.keyArn)
+
+    const uploadBucket = new s3.Bucket(this, 'UploadBucket', {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL, // no public access, ever
+      enforceSSL: true,                                   // reject plain HTTP
+      encryption: s3.BucketEncryption.KMS,                // encrypt files with your key
+      encryptionKey: dataKey,
+      bucketKeyEnabled: true,                             // fewer KMS calls, lower cost
+      removalPolicy: cdk.RemovalPolicy.DESTROY,           // learning only
+      autoDeleteObjects: true,                            // learning only: empties bucket on destroy
+    });
+
+    const uploadUrlLambda = new NodejsFunction(this, 'UploadUrlLambda', {
+      entry: path.join(__dirname, '..', 'lambda', 'upload-url.ts'),
+      handler: 'handler',
+      runtime: lambda.Runtime.NODEJS_22_X,
+      memorySize: 256,
+      timeout: cdk.Duration.seconds(5),
+      vpc,
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
+      securityGroups: [lambdaSg],
+      environment: { BUCKET_NAME: uploadBucket.bucketName },
+      bundling: { minify: true, sourceMap: true },
+    });
+
+    // Only PutObject, and only under uploads/
+    uploadBucket.grantPut(uploadUrlLambda, 'uploads/*');
+
+    api.addRoutes({
+      path: '/upload-url',
+      methods: [HttpMethod.POST],
+      integration: new HttpLambdaIntegration('UploadUrlIntegration', uploadUrlLambda),
+      authorizer: authorizer,
+      authorizationScopes: ['aws.cognito.signin.user.admin'],
+    })
+
+    const logsBucket = new s3.Bucket(this, 'TransactionLogsBucket', {
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      enforceSSL: true,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+    });
+
+    // For testing, your own account plays the vendor
+    const vendorAccount = this.node.tryGetContext('vendorAccount') ?? this.account;
+    // In real life, the vendor gives you this value
+    const vendorExternalId = this.node.tryGetContext('vendorExternalId') ?? 'f47ac10b-58cc-4372-a567-0e02b2c3d479';
+
+    const vendorBoundary = new iam.ManagedPolicy(this, 'VendorBoundary', {
+      description: 'Maximum permissions for any third-party vendor role',
+      statements: [
+        new iam.PolicyStatement({
+          actions: ['s3:GetObject', 's3:ListBucket'],
+          resources: [logsBucket.bucketArn, logsBucket.arnForObjects('*')],
+        }),
+      ],
+    });
+
+    const vendorRole = new iam.Role(this, 'VendorAnalyticsRole', {
+      description: 'Assumed by the analytics vendor to read transaction logs',
+      assumedBy: new iam.AccountPrincipal(vendorAccount), // becomes arn:aws:iam::<account>:root
+      externalIds: [vendorExternalId],                    // adds the sts:ExternalId condition
+      permissionsBoundary: vendorBoundary,
+      maxSessionDuration: cdk.Duration.hours(1),
+    });
+
+    // The actual grant: read only, and only under transaction-logs/
+    logsBucket.grantRead(vendorRole, 'transaction-logs/*');
+
+    new cdk.CfnOutput(this, 'VendorRoleArnOutput', { value: vendorRole.roleArn });
+    new cdk.CfnOutput(this, 'LogsBucketOutput', { value: logsBucket.bucketName });
 
     new cdk.CfnOutput(this, 'UserPoolIdOutput', {
         value: userPool.userPoolId, 
